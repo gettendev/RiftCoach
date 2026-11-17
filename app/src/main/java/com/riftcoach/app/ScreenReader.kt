@@ -117,9 +117,15 @@ class ScreenReader(
     private val host: Host
 ) {
     interface Host {
-        /** Retângulo da janela aberta (em pixels de tela), ou null se fechada. */
+        /** Retângulo da janela aberta (em pixels de tela), ou null se fechada. Só na thread principal. */
         fun panelRect(): Rect?
         fun bubbleRect(): Rect?
+
+        /**
+         * Última vez (relógio [SystemClock.uptimeMillis]) que a janela ou a bolha apareceu, sumiu, mudou
+         * de lugar ou de tamanho. Pode ser chamado de qualquer thread.
+         */
+        fun ownWindowsChangedAt(): Long
         fun onRead(changed: Boolean)
         fun onReaderStopped()
     }
@@ -135,8 +141,20 @@ class ScreenReader(
     private var w = 0
     private var h = 0
 
+    /** Uma leitura (captura + leitor de texto) em andamento: outra não começa até ela acabar. */
+    @Volatile
+    private var busy = false
+
+    /** Pediram leitura logo (poke) enquanto outra estava em andamento. */
+    @Volatile
+    private var soon = false
+
     @Volatile
     private var stopped = false
+
+    /** O próprio app pediu para parar ([stop]), ao contrário do sistema ou do usuário pela notificação de captura. */
+    @Volatile
+    private var stoppedByApp = false
 
     @Volatile
     private var activeUntil = 0L
@@ -150,8 +168,10 @@ class ScreenReader(
 
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
+            // quem desligou foi o próprio app (o usuário desligou a bolha): não é para avisar que parou
+            val byUs = stoppedByApp
             release()
-            main.post { host.onReaderStopped() }
+            if (!byUs) main.post { host.onReaderStopped() }
         }
 
         override fun onCapturedContentResize(width: Int, height: Int) {
@@ -178,6 +198,11 @@ class ScreenReader(
     fun poke() {
         activeUntil = SystemClock.elapsedRealtime() + 6000
         forceOnce = true
+        if (busy) {
+            // a leitura em andamento marca a próxima para logo depois dela
+            soon = true
+            return
+        }
         bg.removeCallbacks(tick)
         bg.postDelayed(tick, 150)
     }
@@ -190,6 +215,7 @@ class ScreenReader(
     }
 
     fun stop() {
+        stoppedByApp = true
         runCatching { projection.stop() }
         release()
     }
@@ -244,12 +270,22 @@ class ScreenReader(
         if (!stopped) bg.postDelayed(tick, delay)
     }
 
+    /** Fim de uma leitura: libera a próxima e agenda. */
+    private fun finish(delay: Long) {
+        busy = false
+        val d = if (soon) min(delay, 150L) else delay
+        soon = false
+        schedule(d)
+    }
+
     private fun runTick() {
-        if (stopped) return
+        if (stopped || busy) return
         val now = SystemClock.elapsedRealtime()
         val full = now < activeUntil
         val idleDelay = if (full) FULL_INTERVAL_MS else IDLE_INTERVAL_MS
         try {
+            // o quadro guardado é o mais novo que existe neste momento
+            val shotAt = SystemClock.uptimeMillis()
             val img = reader?.acquireLatestImage()
             if (img != null) {
                 runCatching { held?.close() }
@@ -265,6 +301,12 @@ class ScreenReader(
             }
             fresh = false
             forceOnce = false
+            if (full && !OwnWindows.usable(shotAt, host.ownWindowsChangedAt())) {
+                // a janela/bolha acabou de mudar: espera a mudança chegar à captura (ver ocr())
+                forceOnce = true
+                schedule(RETRY_MS)
+                return
+            }
 
             val frameW: Int
             val frameH: Int
@@ -290,20 +332,53 @@ class ScreenReader(
                 frameH = cur.height
             }
 
+            busy = true
+            // Onde estavam a janela e a bolha neste quadro? Só a thread principal sabe; a resposta vale
+            // se nada mudou nelas desde um pouco antes do quadro até agora (ver [OwnWindows.usable]).
+            main.post { ocr(region, offX, frameW, frameH, full, shotAt) }
+        } catch (e: Exception) {
+            Log.w(TAG, "falha na captura", e)
+            busy = false
+            schedule(idleDelay)
+        }
+    }
+
+    // roda na thread principal
+    private fun ocr(region: Bitmap, offX: Int, frameW: Int, frameH: Int, full: Boolean, shotAt: Long) {
+        if (stopped) {
+            region.recycle()
+            busy = false
+            return
+        }
+        var own: OwnWindows? = null
+        if (full) {
+            val o = OwnWindows(host.panelRect(), host.bubbleRect())
+            if (!OwnWindows.usable(shotAt, host.ownWindowsChangedAt())) {
+                // a janela/bolha acabou de mudar (abriu, fechou, foi arrastada): este quadro pode ser de
+                // antes da mudança e não dá para saber o que estava coberto. Descarta e lê de novo logo.
+                region.recycle()
+                forceOnce = true // lê de novo mesmo que a tela fique parada
+                finish(RETRY_MS)
+                return
+            }
+            own = o
+        }
+        try {
             FrameOcr.recognizer.process(InputImage.fromBitmap(region, 0))
                 .addOnSuccessListener { text ->
-                    runCatching { handle(text, region, offX, frameW, frameH, full) }
+                    runCatching { handle(text, region, offX, frameW, frameH, full, own) }
                         .onFailure { Log.w(TAG, "falha ao interpretar a tela", it) }
                 }
                 .addOnFailureListener { Log.w(TAG, "falha no leitor de texto", it) }
                 .addOnCompleteListener {
                     region.recycle()
                     val t = SystemClock.elapsedRealtime()
-                    schedule(if (t < activeUntil) (if (full) FULL_INTERVAL_MS else 150L) else IDLE_INTERVAL_MS)
+                    finish(if (t < activeUntil) (if (full) FULL_INTERVAL_MS else 150L) else IDLE_INTERVAL_MS)
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "falha na captura", e)
-            schedule(idleDelay)
+            Log.w(TAG, "falha no leitor de texto", e)
+            region.recycle()
+            finish(IDLE_INTERVAL_MS)
         }
     }
 
@@ -338,14 +413,23 @@ class ScreenReader(
     }
 
     // roda na thread principal
-    private fun handle(text: Text, region: Bitmap, offX: Int, frameW: Int, frameH: Int, full: Boolean) {
+    private fun handle(text: Text, region: Bitmap, offX: Int, frameW: Int, frameH: Int, full: Boolean, own: OwnWindows?) {
         if (stopped) return
         val parser = Repo.parser ?: return
-        var lines = FrameOcr.lines(text, region, offX, 0, frameW, frameH)
+        val lines = FrameOcr.lines(text, region, offX, 0, frameW, frameH)
         val now = SystemClock.elapsedRealtime()
 
-        if (full) lines = dropOwnWindows(lines)
-        val read = parser.parse(lines)
+        if (full && own != null && own.panel == null && OwnWindows.panelTextSeen(lines)) {
+            // Rede de segurança: a janela estava fechada, mas o texto dela está no quadro (num celular
+            // lento, a janela que acabou de fechar ainda pode aparecer na captura). O que está embaixo
+            // dela viraria ban/pick: descarta e lê de novo logo.
+            Log.d(TAG, "quadro com a janela fechada ainda mostra a janela: lendo de novo")
+            forceOnce = true
+            soon = true
+            return
+        }
+
+        val read = parser.parse(lines, if (full && own != null) coveredBy(lines, own) else emptyList())
 
         if (!full) {
             if (read.phase != Phase.NONE) {
@@ -375,26 +459,27 @@ class ScreenReader(
         host.onRead(changed)
     }
 
-    /** Tira da leitura os textos da nossa própria janela e da bolha, quando elas aparecem na captura. */
-    private fun dropOwnWindows(lines: List<TextLine>): List<TextLine> {
-        val panel = host.panelRect()
-        val bubble = host.bubbleRect()
+    /**
+     * Áreas da captura escondidas pela nossa janela e pela bolha (onde estavam quando o quadro foi
+     * desenhado). Quando o usuário compartilha só o app do jogo, elas não aparecem na captura e nada fica coberto.
+     */
+    private fun coveredBy(lines: List<TextLine>, own: OwnWindows): List<Area> {
         val sw = w.toFloat()
         val sh = h.toFloat()
-        fun inside(l: TextLine, r: Rect) =
-            l.cx * sw >= r.left && l.cx * sw <= r.right && l.cy * sh >= r.top && l.cy * sh <= r.bottom
-
+        if (sw <= 0f || sh <= 0f) return emptyList()
+        fun area(r: Rect) = Area(r.left / sw, r.top / sh, r.right / sw, r.bottom / sh)
+        val panel = own.panel?.let { area(it) }
         if (panel != null) {
-            val own = lines.any { inside(it, panel) && OWN_TEXT.containsMatchIn(it.text) }
-            if (own) {
+            val seen = lines.any { panel.contains(it) && OWN_TEXT.containsMatchIn(it.text) }
+            if (seen) {
                 overlayInCapture = true
                 ownTextMisses = 0
             } else if (++ownTextMisses >= 3) {
                 overlayInCapture = false
             }
         }
-        if (!overlayInCapture) return lines
-        return lines.filter { l -> !(panel != null && inside(l, panel)) && !(bubble != null && inside(l, bubble)) }
+        if (!overlayInCapture) return emptyList()
+        return listOfNotNull(panel, own.bubble?.let { area(it) })
     }
 
     companion object {
@@ -403,6 +488,36 @@ class ScreenReader(
         private const val FULL_INTERVAL_MS = 600L
         private const val IDLE_INTERVAL_MS = 2500L
         private const val ACTIVE_HOLD_MS = 8000L
+        private const val RETRY_MS = 200L
         private val OWN_TEXT = Regex("Bans|Picks|An[áa]lise|Novo")
+    }
+}
+
+/** Onde estavam a nossa janela e a bolha (pixels de tela) num quadro capturado. */
+class OwnWindows(val panel: Rect?, val bubble: Rect?) {
+    companion object {
+        /**
+         * Tempo para uma mudança na janela/bolha chegar aos quadros capturados. Até lá, o quadro mais novo
+         * pode ainda mostrar a janela onde ela estava (ou não mostrar a que acabou de abrir).
+         */
+        const val SETTLE_MS = 400L
+
+        /**
+         * A posição atual da janela/bolha vale para o quadro pego em `shotAt` (o mais novo naquele momento)?
+         * Só se a última mudança nelas (`changedAt`, mesmo relógio) foi pelo menos [SETTLE_MS] antes: aí a
+         * mudança já chegou à captura, e como `changedAt` é lido depois, nada mudou desde então.
+         * Se a mudança veio depois do quadro, a posição de agora não é a do quadro: não vale.
+         */
+        fun usable(shotAt: Long, changedAt: Long): Boolean = changedAt + SETTLE_MS <= shotAt
+
+        private val PICKS = Regex("\\bPicks\\b")
+        private val ANALISE = Regex("\\bAn[áa]lise\\b")
+
+        /**
+         * As abas "Picks" e "Análise" da nossa janela aparecem neste quadro? Uma sozinha pode ser texto do
+         * jogo ou do chat; as duas juntas são o cabeçalho da janela.
+         */
+        fun panelTextSeen(lines: List<TextLine>): Boolean =
+            lines.any { PICKS.containsMatchIn(it.text) } && lines.any { ANALISE.containsMatchIn(it.text) }
     }
 }

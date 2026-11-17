@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -166,6 +167,16 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
 
     override fun bubbleRect(): Rect? = screenRect(bubble)
 
+    /** Última mudança na janela/bolha (abriu, fechou, arrastou), para a leitura saber o que estava coberto. */
+    @Volatile
+    private var ownChangedAt = 0L
+
+    override fun ownWindowsChangedAt(): Long = ownChangedAt
+
+    private fun markOwnChanged() {
+        ownChangedAt = SystemClock.uptimeMillis()
+    }
+
     override fun onRead(changed: Boolean) {
         // com o seu campeão confirmado, a build (com runas e feitiços) já começa a ser calculada,
         // mesmo com a janela fechada: quando você abrir, ela está pronta
@@ -175,10 +186,16 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
         val phase = Repo.tracker.phase
         // Na revelação dos bans os nomes aparecem bem no centro, embaixo da janela.
         // A janela sai da frente por alguns segundos para o app conseguir ler, e volta sozinha.
+        // A leitura é pedida logo (assim que a janela some da captura), e um quadro pego sem a janela
+        // continua valendo mesmo que ela volte antes do leitor de texto terminar (ver ScreenReader).
         if (phase == Phase.BAN_REVEAL && !revealHandled) {
             revealHandled = true
             if (panel != null) {
                 removePanel()
+                reader?.poke()
+                // 2ª leitura no meio do tempo escondida: com a tela parada não vem quadro novo e o poke
+                // faz reler o mesmo quadro (vale para a confirmação dos bans)
+                ui.postDelayed({ if (running && panel == null) reader?.poke() }, REVEAL_HIDE_MS / 2)
                 ui.postDelayed({ if (running && panel == null) showPanel() }, REVEAL_HIDE_MS)
             }
         } else if (phase != Phase.BAN_REVEAL) {
@@ -202,6 +219,8 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
     }
 
     override fun onReaderStopped() {
+        // a bolha já foi desligada: o aviso de "parou" não faz sentido
+        if (!running) return
         reader = null
         Repo.readerState = Repo.READER_OFF
         panel?.refreshStatus()
@@ -255,6 +274,7 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
                             lp.x = startX + dx.toInt()
                             lp.y = startY + dy.toInt()
                             runCatching { wm.updateViewLayout(view, lp) }
+                            markOwnChanged()
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) togglePanel()
@@ -294,17 +314,55 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         try {
             val p = Panel(this, this)
+            var first = true
+            p.root.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+                // só quando o tamanho muda (trocar o conteúdo da janela não conta)
+                if (l != oldL || t != oldT || r != oldR || b != oldB) markOwnChanged()
+                if (first) {
+                    first = false
+                    // já com a posição real na tela (o sistema pode empurrar a janela por causa das barras)
+                    p.root.post { moveBubbleOffPanel() }
+                }
+            }
             wm.addView(p.root, lp)
             panel = p
             panelLp = lp
+            markOwnChanged()
             reader?.poke()
         } catch (e: Exception) {
             Toast.makeText(this, "Não foi possível abrir a janela: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
+    /**
+     * Se a bolha ficou por cima da janela (cobrindo o botão da rota e as abas), ela vai para o lado
+     * da janela, na mesma altura. Depois o usuário pode arrastá-la para onde quiser.
+     */
+    private fun moveBubbleOffPanel() {
+        val v = bubble ?: return
+        val lp = bubbleLp ?: return
+        val plp = panelLp ?: return
+        val pr = panelRect() ?: return
+        val br = bubbleRect() ?: return
+        if (!Rect.intersects(pr, br)) return
+        // bolha e janela usam o mesmo sistema de posição (canto de cima à esquerda), então a conta é
+        // feita direto nas posições delas
+        val gap = dp(6f)
+        val size = lp.width
+        val left = plp.x - gap - size
+        val right = plp.x + plp.width + gap
+        lp.x = when {
+            left >= 0 -> left
+            right + size <= resources.displayMetrics.widthPixels -> right
+            else -> return
+        }
+        runCatching { wm.updateViewLayout(v, lp) }
+        markOwnChanged()
+    }
+
     private fun removePanel() {
         panel?.let { runCatching { wm.removeView(it.root) } }
+        if (panel != null) markOwnChanged()
         panel = null
         panelLp = null
     }
@@ -326,6 +384,7 @@ class OverlayService : Service(), Panel.Host, ScreenReader.Host {
         lp.x += dx
         lp.y += dy
         runCatching { wm.updateViewLayout(p.root, lp) }
+        markOwnChanged()
     }
 
     companion object {

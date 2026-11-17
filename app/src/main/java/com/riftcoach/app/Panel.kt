@@ -87,6 +87,7 @@ class Panel(private val ctx: Context, private val host: Host) {
 
     // ------------------------------------------------------------ cabeçalho
 
+    /** O alfa vai só na cor do fundo (não em `root.alpha`, que deixaria o texto translúcido junto). */
     private fun applyOpacity() {
         val idx = Repo.prefs(ctx).getInt("opacity", 1).coerceIn(0, OPACITY.size - 1)
         root.background = Ui.round(
@@ -273,6 +274,7 @@ class Panel(private val ctx: Context, private val host: Host) {
         row.addView(col, lp(0, WRAP, 1f).apply { leftMargin = dp(7f) })
         row.setOnClickListener {
             draft.bans.add(s.champ.id)
+            tracker.userBanned(s.champ.id)
             render()
         }
         return row
@@ -301,7 +303,10 @@ class Panel(private val ctx: Context, private val host: Host) {
         }
         row.addView(plus(32f) {
             openPicker("Marcar campeão banido", null, false) { id ->
-                if (id != null) draft.bans.add(id)
+                if (id != null) {
+                    draft.bans.add(id)
+                    tracker.userBanned(id)
+                }
                 render()
             }
         })
@@ -403,9 +408,16 @@ class Panel(private val ctx: Context, private val host: Host) {
         if (draft.enemies.isNotEmpty())
             note("A rota embaixo de cada inimigo é deduzida. Em vermelho: quem deve cair contra você.", Ui.withAlpha(Ui.MUTED, 0.75f), 9.5f)
 
-        // --- sugestões
-        section("MELHORES PICKS PARA VOCÊ — ${draft.myLane.label.uppercase()}", 6f)
-        if (draft.allies.isEmpty() && draft.enemies.isEmpty())
+        // --- sugestões (com o seu campeão já escolhido, viram alternativas)
+        val laneName = draft.myLane.label.uppercase()
+        if (me != null) {
+            section("SEU CAMPEÃO — $laneName", 6f)
+            note("${me.name} · a build, as runas e os feitiços estão na aba Análise.", Ui.GOLD, 11.5f)
+            section("ALTERNATIVAS PARA $laneName (se ainda der para trocar)")
+        } else {
+            section("MELHORES PICKS PARA VOCÊ — $laneName", 6f)
+        }
+        if (me == null && draft.allies.isEmpty() && draft.enemies.isEmpty())
             note("Por enquanto só pelo meta. Toque nos espaços acima conforme os campeões forem escolhidos e a lista se ajusta.")
         val picks = engine.suggestPicks(draft)
         if (picks.isEmpty()) note("Sem dados para esta rota.")
@@ -726,8 +738,12 @@ class Panel(private val ctx: Context, private val host: Host) {
     }
 
     companion object {
-        /** Opacidade do fundo da janela: o botão ◐ alterna entre estas. */
-        private val OPACITY = floatArrayOf(0.45f, 0.68f, 0.90f)
+        /**
+         * Opacidade do fundo da janela: o botão ◐ alterna entre estas. Só o fundo fica transparente; o
+         * texto e os ícones da janela são sempre 100% nítidos. A do meio é a padrão: com 0,86 o texto de
+         * um fundo claro (a tela inicial do app) ainda atravessava; com 0,94 sobra só um vulto.
+         */
+        private val OPACITY = floatArrayOf(0.62f, 0.94f, 1f)
 
         /** Aba aberta; guardada aqui para sobreviver quando a janela é recriada (girar a tela). */
         var tab = 0

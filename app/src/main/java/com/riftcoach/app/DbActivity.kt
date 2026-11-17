@@ -9,6 +9,7 @@ import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -32,6 +33,7 @@ class DbActivity : Activity() {
     private lateinit var detailScroll: ScrollView
     private lateinit var detail: LinearLayout
     private lateinit var status: TextView
+    private lateinit var empty: TextView
     private val adapter = RowAdapter()
     private var tab = 0
     private var db: GameDb? = null
@@ -78,6 +80,9 @@ class DbActivity : Activity() {
             })
         }
         root.addView(search, lp(MATCH, WRAP).apply { topMargin = dp(10f); bottomMargin = dp(8f) })
+
+        empty = Ui.text(this, "", 13f, Ui.MUTED).apply { visibility = View.GONE }
+        root.addView(empty, lp(MATCH, WRAP).apply { bottomMargin = dp(8f) })
 
         list = ListView(this).apply {
             divider = null
@@ -127,9 +132,11 @@ class DbActivity : Activity() {
             val c = Ui.chip(this, names[i], i == tab, 13f)
             c.setOnClickListener {
                 tab = i
-                closeDetail()
+                // sem atualizar o aviso aqui: as linhas ainda são as da aba anterior (o fill() abaixo atualiza)
+                closeDetail(refreshEmpty = false)
                 buildTabs()
-                fill()
+                // cada aba começa sem busca (um nome de campeão não acha nada em Itens, Runas e Feitiços)
+                if (search.text.isNotEmpty()) search.setText("") else fill()
             }
             tabsRow.addView(c, lp(WRAP, WRAP).apply { rightMargin = dp(6f) })
         }
@@ -172,6 +179,18 @@ class DbActivity : Activity() {
         }
         adapter.rows = rows
         adapter.notifyDataSetChanged()
+        updateEmpty()
+    }
+
+    /**
+     * Aviso de busca sem resultado. Só aparece na lista: com o detalhe de um campeão/item aberto, a busca
+     * pode mudar por baixo (o teclado termina de escrever depois do toque) e o aviso não pode ir para cima dele.
+     */
+    private fun updateEmpty() {
+        val typed = search.text.toString().trim()
+        val none = adapter.rows.isEmpty() && norm(typed).isNotEmpty()
+        empty.text = "Nada encontrado para “$typed” nesta aba."
+        empty.visibility = if (none && detailScroll.visibility != View.VISIBLE) View.VISIBLE else View.GONE
     }
 
     private fun tierName(t: Int) = when (t) {
@@ -189,16 +208,21 @@ class DbActivity : Activity() {
         detail.addView(back, lp(WRAP, WRAP).apply { bottomMargin = dp(12f) })
         detail.addView(Ui.text(this, title, 22f, Ui.TEXT, true))
         if (sub.isNotEmpty()) detail.addView(Ui.text(this, sub, 13f, Ui.MUTED), lp(MATCH, WRAP).apply { topMargin = dp(3f) })
+        // o teclado fecha junto: com a busca escondida, o que fosse digitado iria para ela sem ninguém ver
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(search.windowToken, 0)
+        search.clearFocus()
         list.visibility = View.GONE
         search.visibility = View.GONE
+        empty.visibility = View.GONE
         detailScroll.visibility = View.VISIBLE
         detailScroll.scrollTo(0, 0)
     }
 
-    private fun closeDetail() {
+    private fun closeDetail(refreshEmpty: Boolean = true) {
         detailScroll.visibility = View.GONE
         list.visibility = View.VISIBLE
         search.visibility = View.VISIBLE
+        if (refreshEmpty) updateEmpty()
     }
 
     private fun section(title: String) {
@@ -217,6 +241,9 @@ class DbActivity : Activity() {
     }
 
     private fun hasChinese(s: String) = s.any { it.code in 0x4E00..0x9FFF }
+
+    /** Tira as marcas do texto oficial: "&Smolder&" -> "Smolder"; espaços repetidos viram um. */
+    private fun cleanRaw(s: String) = s.replace(Regex("&([^&]*)&"), "$1").replace("&", "").replace(Regex("\\s+"), " ").trim()
 
     private fun showHero(c: Champion, h: HeroDetail) {
         openDetail(c.name, "Números oficiais do campeão")
@@ -238,8 +265,17 @@ class DbActivity : Activity() {
             section(s.slotLabel.uppercase())
             if (s.effects.isEmpty() && s.table.isEmpty()) para("Sem números extraídos para esta habilidade.", Ui.MUTED)
             for (e in s.effects) {
-                if (e.raw != null) para("${e.kind}: fórmula ainda não interpretada (${e.raw})", Ui.MUTED, 12.5f)
-                else para("• " + e.describe(), Ui.BLUE)
+                // Fórmula que o app ainda não entende: mostra o texto original quando ele não tem chinês
+                // ("Escudo: 8%"), sem as marcas do texto oficial ("&Smolder&" -> "Smolder");
+                // com chinês, um aviso no lugar.
+                val kind = if (hasChinese(e.kind)) "Valor" else e.kind
+                val raw = e.raw?.let { cleanRaw(it) }
+                val d = if (raw != null) "$kind: $raw" else e.describe()
+                when {
+                    hasChinese(d) || (raw != null && raw.isEmpty()) -> para("• $kind: detalhe numérico não disponível", Ui.MUTED, 12.5f)
+                    raw != null -> para("• $d", Ui.MUTED, 12.5f)
+                    else -> para("• $d", Ui.BLUE)
+                }
             }
             for ((label, value) in s.table) line(if (hasChinese(label)) "Outro valor" else label, value)
         }

@@ -20,6 +20,14 @@ class TextLine(
     val cy get() = (y0 + y1) / 2
 }
 
+/** Retângulo em fração da tela (mesma escala das [TextLine]). Usado para as áreas cobertas pela nossa janela/bolha. */
+class Area(val x0: Float, val y0: Float, val x1: Float, val y1: Float) {
+    /** O centro da linha está dentro da área? */
+    fun contains(l: TextLine) = l.cx >= x0 && l.cx <= x1 && l.cy >= y0 && l.cy <= y1
+
+    fun overlaps(ax0: Float, ay0: Float, ax1: Float, ay1: Float) = x0 < ax1 && ax0 < x1 && y0 < ay1 && ay0 < y1
+}
+
 enum class Phase { NONE, BAN, BAN_REVEAL, PICK, PREP, LOADING }
 
 /** Linha de um aliado: ou mostra a rota (ainda não escolheu) ou o campeão (já confirmou). */
@@ -35,11 +43,20 @@ class ScreenRead(
     val bans: List<String>,
     /** Tela de carregamento: campeões da fileira de cima e da de baixo. */
     val loadTop: List<String> = emptyList(),
-    val loadBottom: List<String> = emptyList()
+    val loadBottom: List<String> = emptyList(),
+    /** Partes da tela escondidas pela nossa janela ou pela bolha nesta captura (o que está ali não foi lido). */
+    val covered: List<Area> = emptyList()
 ) {
     /** A tela parece ser a seleção de campeões (ou o carregamento logo depois dela)? */
     val isDraft: Boolean
         get() = phase != Phase.NONE || allies.size >= 2 || enemies.size >= 2
+
+    /** Algum campeão confirmado num dos times? (nas telas de ban ainda não há nenhum) */
+    val hasChamps: Boolean
+        get() = allies.any { it.champ != null } || enemies.any { it.champ != null }
+
+    /** Algum pedaço deste retângulo estava escondido pela nossa janela/bolha? */
+    fun hidden(x0: Float, y0: Float, x1: Float, y1: Float) = covered.any { it.overlaps(x0, y0, x1, y1) }
 }
 
 /** Reconhece nomes de campeões e de rotas em texto lido da tela (tolerando pequenos erros de leitura). */
@@ -174,23 +191,28 @@ class NameIndex(champs: Collection<Champion>) {
 /** Transforma as linhas de texto de uma captura de tela numa leitura do draft. */
 class ScreenParser(private val names: NameIndex) {
 
-    fun parse(lines: List<TextLine>): ScreenRead {
+    /**
+     * `covered` = áreas da captura que estavam embaixo da nossa janela ou da bolha. O texto dentro delas
+     * é descartado (é o nosso, ou o do jogo misturado com o nosso), e a leitura fica sabendo que não viu ali.
+     */
+    fun parse(all: List<TextLine>, covered: List<Area> = emptyList()): ScreenRead {
+        val lines = if (covered.isEmpty()) all else all.filter { l -> covered.none { it.contains(l) } }
         val phase = detectPhase(lines)
         val allies = parseAllies(lines)
         val enemies = parseEnemies(lines)
         val bans = if (phase == Phase.BAN_REVEAL) parseBans(lines) else emptyList()
         if (phase == Phase.PREP) {
             // fase de preparação: os 5 campeões do time aparecem com o nome numa faixa perto da base
-            return ScreenRead(phase, allies, enemies, bans, loadingRow(lines, 0.685f, 0.735f))
+            return ScreenRead(phase, allies, enemies, bans, loadingRow(lines, PREP_Y0, PREP_Y1), covered = covered)
         }
         if (phase == Phase.NONE && allies.isEmpty() && enemies.isEmpty()) {
             val top = loadingRow(lines, 0.275f, 0.342f)
             val bottom = loadingRow(lines, 0.780f, 0.842f)
             if (top.size >= 3 && bottom.size >= 3) {
-                return ScreenRead(Phase.LOADING, allies, enemies, bans, top, bottom)
+                return ScreenRead(Phase.LOADING, allies, enemies, bans, top, bottom, covered)
             }
         }
-        return ScreenRead(phase, allies, enemies, bans)
+        return ScreenRead(phase, allies, enemies, bans, covered = covered)
     }
 
     /**
@@ -200,7 +222,7 @@ class ScreenParser(private val names: NameIndex) {
     private fun loadingRow(lines: List<TextLine>, yMin: Float, yMax: Float): List<String> {
         val out = LinkedHashSet<String>()
         for (l in lines.sortedBy { it.x0 }) {
-            if (l.cy < yMin || l.cy > yMax || l.cx < 0.15f || l.cx > 0.85f) continue
+            if (l.cy < yMin || l.cy > yMax || l.cx < ROW_X0 || l.cx > ROW_X1) continue
             val words = l.text.split(Regex("\\s+")).filter { it.isNotBlank() }
             var found: String? = null
             search@ for (start in words.indices) {
@@ -230,7 +252,9 @@ class ScreenParser(private val names: NameIndex) {
                 }
             }
         }
-        return if (reveal) Phase.BAN_REVEAL else header
+        // O título do topo dizendo escolha/preparação vale mais que um texto solto de "banidos" no meio
+        // da tela (chat, aviso): a revelação dos bans nunca vem depois dos picks no mesmo draft.
+        return if (reveal && header != Phase.PICK && header != Phase.PREP) Phase.BAN_REVEAL else header
     }
 
     /** Junta cada título com a linha logo abaixo (apelido). Devolve pares (título, apelido ou null). */
@@ -324,6 +348,12 @@ class ScreenParser(private val names: NameIndex) {
         /** Posição vertical do nome do 1º jogador e distância entre as linhas (frações da altura). */
         const val FIRST_TITLE_Y = 0.170f
         const val ROW_PITCH = 0.1333f
+
+        /** Faixa (altura e largura) dos nomes do time na fase de preparação. */
+        const val PREP_Y0 = 0.685f
+        const val PREP_Y1 = 0.735f
+        const val ROW_X0 = 0.15f
+        const val ROW_X1 = 0.85f
     }
 }
 
@@ -347,12 +377,27 @@ class DraftTracker(private val draft: Draft) {
     /** Campeões que a leitura automática colocou no draft (para saber quando o usuário está corrigindo um erro dela). */
     private val readerSet = HashSet<String>()
 
+    /** Bans marcados à mão depois da revelação dos bans (zerado junto com o draft). */
+    private val kept = HashSet<String>()
+
     /**
      * Chamado pela janela quando o usuário tira um campeão à mão.
      * Se foi a leitura que colocou, é uma correção: ela não coloca de novo neste draft.
      */
     fun userRemoved(champId: String?) {
-        if (champId != null && champId in readerSet) rejected.add(champId)
+        if (champId == null) return
+        kept.remove(champId)
+        if (champId in readerSet) rejected.add(champId)
+    }
+
+    /**
+     * O usuário marcou um ban à mão (cartão de sugestão ou "+"): se a leitura tinha rejeitado, volta a valer.
+     * Depois da revelação dos bans, a marcação é guardada como "mantida": nunca conta como extra, então as
+     * leituras seguintes não a apagam. Toques feitos na fase de ban continuam saindo na revelação.
+     */
+    fun userBanned(champId: String) {
+        rejected.remove(champId)
+        if (phase.ordinal >= Phase.BAN_REVEAL.ordinal) kept.add(champId)
     }
 
     /** O usuário definiu à mão o aliado desta rota: a leitura não mexe mais nela. */
@@ -374,6 +419,7 @@ class DraftTracker(private val draft: Draft) {
         pending.clear()
         rejected.clear()
         readerSet.clear()
+        kept.clear()
         manualLanes.clear()
         manualMyLane = false
         phase = Phase.NONE
@@ -414,20 +460,48 @@ class DraftTracker(private val draft: Draft) {
         if (read.phase == Phase.LOADING) return applyLoading(read, nowMs)
         var changed = false
 
-        // --- draft novo? (passou muito tempo, ou voltou para a fase de ban com picks já marcados)
-        val hasPicks = draft.myPick != null || draft.allies.isNotEmpty() || draft.enemies.isNotEmpty()
+        // --- draft novo? (1) passou muito tempo sem tela de draft (a partida acabou de ser jogada)
+        fun hasPicks() = draft.myPick != null || draft.allies.isNotEmpty() || draft.enemies.isNotEmpty()
         val stale = lastDraftAt != 0L && nowMs - lastDraftAt > NEW_DRAFT_GAP_MS
-        if ((stale && (hasPicks || draft.bans.isNotEmpty())) || (read.phase == Phase.BAN && hasPicks)) {
+        if (stale && (hasPicks() || draft.bans.isNotEmpty())) {
             draft.reset()
             reset()
             changed = true
         }
         lastDraftAt = nowMs
 
-        if (read.phase != Phase.NONE && read.phase != phase) {
+        // Uma tela de ban (fase de banimento ou revelação dos bans) nunca tem campeão confirmado nos
+        // times. Se a leitura diz "ban" mas tem campeão, o "banidos" veio de um texto solto (chat, aviso)
+        // numa tela de escolha: não conta como tela de ban (nem muda a fase, nem traz bans).
+        val banPhase = read.phase == Phase.BAN || read.phase == Phase.BAN_REVEAL
+        val banScreen = banPhase && !read.hasChamps
+
+        // (2) apareceu uma tela de ban depois de uma fase de escolha/preparação/carregamento, ou antes de
+        // qualquer fase, com picks no draft: num draft de verdade os bans vêm antes dos picks, então esses
+        // picks são do draft anterior.
+        // Também conta quando a fase anterior era de escolha/preparação/carregamento e o draft ainda tem bans:
+        // alguém desistiu da fila antes de qualquer pick ser lido (a fase de ban dura ~30 s, as 2 leituras sobram).
+        // Só a passagem para a fase de ban conta: correções feitas à mão durante os bans do draft novo ficam.
+        // Precisa de duas leituras seguidas, para uma leitura errada não apagar o draft todo.
+        val inBans = phase == Phase.BAN || phase == Phase.BAN_REVEAL
+        val afterBans = phase == Phase.PICK || phase == Phase.PREP || phase == Phase.LOADING
+        if (banScreen && !inBans && (hasPicks() || (afterBans && draft.bans.isNotEmpty()))) {
+            if (!confirm(NEW_DRAFT_KEY, "ban")) return changed // ainda não aplica nada desta leitura
+            draft.reset()
+            reset()
+            changed = true
+        } else {
+            pending.remove(NEW_DRAFT_KEY)
+        }
+
+        if (read.phase != Phase.NONE && read.phase != phase && (banScreen || !banPhase)) {
             phase = read.phase
             changed = true
         }
+
+        // --- bans (antes das rotas: se a revelação mostrar que é um draft novo, o que esta leitura
+        // ensina sobre as rotas já fica no draft novo)
+        if (read.phase == Phase.BAN_REVEAL && banScreen && applyBans(read.bans)) changed = true
 
         // --- rotas: enquanto a linha mostra a rota, aprendemos de quem ela é
         for (r in read.allies) {
@@ -504,16 +578,69 @@ class DraftTracker(private val draft: Draft) {
             }
         }
 
-        // --- bans
-        for (b in read.bans) {
+
+        if (read.phase == Phase.PREP) {
+            val partial = read.hidden(ScreenParser.ROW_X0, ScreenParser.PREP_Y0, ScreenParser.ROW_X1, ScreenParser.PREP_Y1)
+            if (completeTeam(read.loadTop, partial)) changed = true
+        }
+        return changed
+    }
+
+    /**
+     * Bans lidos na tela de revelação. O que a leitura mostra SEMPRE entra no draft já na primeira vez
+     * (a janela some por pouco tempo: pode não haver segunda leitura); só tirar bans espera.
+     *
+     * - Leitura parcial (parte coberta, nome que o leitor não pegou): só acrescenta o que leu.
+     * O total real são 10 lugares de ban (5 por time), com lugares vazios possíveis; 8 é o mínimo para
+     * considerar a leitura completa.
+     * - Leitura completa (de [FULL_BANS_MIN] a [MAX_BANS] nomes): é a lista de bans deste draft. Se o draft tem
+     *   algum ban que não está nela ("extra"; os "mantidos" à mão depois da revelação nunca contam):
+     *   - extras que não vieram da leitura (marcados à mão, por toque num cartão de sugestão antes da
+     *     revelação): saem sempre já nesta leitura, porque os bans do jogo não somam com os marcados à mão;
+     *   - extras que vieram da leitura (falso ban de leitura parcial, ou ban de um draft anterior): só agem
+     *     depois de duas leituras iguais. Com 3 ou mais deles é um draft anterior (alguém desistiu da
+     *     fila, ou partida nova em menos de 90 s): começa um draft novo, com picks e tudo. Com 1 ou 2
+     *     pode ser só ruído de leitura: tira só esses e não apaga picks nem rotas.
+     * - Leitura com mais de [MAX_BANS] nomes é impossível (um texto solto virou nome de campeão): só
+     *   acrescenta, como a parcial; nunca remove nem recomeça (um falso ban esconde 1 campeão; perder os
+     *   reais faria o app sugerir banidos).
+     * As correções à mão de picks e rotas continuam valendo, e um ban que o usuário tirou não volta.
+     */
+    private fun applyBans(read: List<String>): Boolean {
+        var changed = false
+        if (read.size in FULL_BANS_MIN..MAX_BANS) {
+            val seen = read.filter { it !in rejected }.toSet()
+            // "mantidos" (marcados à mão depois da revelação) nunca contam como extra
+            val extra = draft.bans.filter { it !in seen && it !in kept }
+            // bans marcados à mão (não vieram da leitura) não somam com os do jogo: saem já nesta leitura
+            val manual = extra.filter { it !in readerSet }.toSet()
+            if (manual.isNotEmpty()) {
+                draft.bans.removeAll(manual)
+                changed = true
+            }
+            // só os bans postos pela leitura esperam duas leituras iguais (e só eles contam para o draft novo)
+            val lidos = extra.filter { it !in manual }
+            if (lidos.isEmpty()) {
+                pending.remove(BANS_KEY)
+            } else if (confirm(BANS_KEY, seen.sorted().joinToString(","))) {
+                if (lidos.size >= NEW_DRAFT_EXTRAS) {
+                    draft.reset()
+                    reset()
+                    phase = Phase.BAN_REVEAL
+                } else {
+                    draft.bans.removeAll(lidos.toSet())
+                    pending.remove(BANS_KEY)
+                }
+                changed = true
+            }
+        }
+        for (b in read) {
             if (b in rejected) continue
             if (draft.bans.add(b)) {
                 readerSet.add(b)
                 changed = true
             }
         }
-
-        if (read.phase == Phase.PREP && completeTeam(read.loadTop)) changed = true
         return changed
     }
 
@@ -521,12 +648,15 @@ class DraftTracker(private val draft: Draft) {
      * As telas de preparação e de carregamento mostram os 5 campeões do time, mas sem a rota.
      * Se falta exatamente um campeão no nosso time e sobrou exatamente um lugar, ele vai para lá.
      * (Acontece quando o último pick é confirmado e a tela muda antes de dar tempo de ler.)
+     * `partial` = parte da fileira estava embaixo da nossa janela: aí bastam 2 nomes, desde que pelo
+     * menos um já seja do nosso time (prova de que a fileira lida é a nossa).
      */
-    private fun completeTeam(names: List<String>): Boolean {
-        if (names.size < 4) return false
+    private fun completeTeam(names: List<String>, partial: Boolean = false): Boolean {
         val have = HashSet<String>(draft.allies.values)
         draft.myPick?.let { have.add(it) }
-        val missing = names.filter { it !in have && it !in draft.enemies && it !in rejected }
+        if (names.size < 4 && !(partial && names.size >= 2 && names.any { it in have })) return false
+        // um campeão banido nunca está num time (o nome pode vir de um texto da tela que não é o time)
+        val missing = names.filter { it !in have && it !in draft.enemies && it !in draft.bans && it !in rejected }
         if (missing.size != 1) return false
         val champ = missing[0]
         val emptyLanes = Lane.entries.filter { it != draft.myLane && it !in draft.allies.keys && it !in manualLanes }
@@ -564,7 +694,7 @@ class DraftTracker(private val draft: Draft) {
             read.loadBottom.count { it in foes } + read.loadTop.count { it in mine }
         val enemyRow = if (topIsEnemy) read.loadTop else read.loadBottom
         for (c in enemyRow) {
-            if (c in mine || c in rejected || c in draft.enemies || draft.enemies.size >= 5) continue
+            if (c in mine || c in rejected || c in draft.bans || c in draft.enemies || draft.enemies.size >= 5) continue
             draft.enemies.add(c)
             readerSet.add(c)
             changed = true
@@ -579,5 +709,20 @@ class DraftTracker(private val draft: Draft) {
 
         /** Leituras iguais seguidas necessárias para mudar um campeão de rota dentro do time. */
         const val MOVE_CONFIRM = 5
+
+        /**
+         * O draft tem 10 lugares de ban (5 por time), e pode haver lugar vazio (ban pulado). Uma leitura da
+         * revelação só vale como "completa" (lista de bans do draft, que remove manuais/extras) com pelo
+         * menos [FULL_BANS_MIN] nomes; 9 e 10 são leituras legítimas. Detectar lugar vazio por imagem fica
+         * para uma tarefa futura.
+         */
+        const val FULL_BANS_MIN = 8
+        const val MAX_BANS = 10
+
+        private const val NEW_DRAFT_KEY = "draftNovo"
+        /** Extras postos pela leitura (bans no draft que a leitura completa não mostra) a partir dos quais é um draft novo. */
+        const val NEW_DRAFT_EXTRAS = 3
+
+        private const val BANS_KEY = "bans"
     }
 }

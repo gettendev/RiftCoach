@@ -13,6 +13,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.LruCache
 import android.util.TypedValue
 import android.view.Gravity
@@ -24,7 +25,9 @@ import android.widget.TextView
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 object Ui {
     const val BG = 0xFF0A1428.toInt()
@@ -146,11 +149,31 @@ class InitialsDrawable(name: String) : Drawable() {
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
-/** Baixa os ícones dos campeões uma vez e guarda no celular. */
+/**
+ * Baixa os ícones dos campeões uma vez e guarda no celular.
+ * O seletor de campeões pede ~140 ícones de uma vez (e pede de novo a cada rolagem ou letra digitada):
+ * cada ícone é baixado uma vez só, mesmo que vários quadrinhos o peçam, e o pedido mais recente vai
+ * na frente da fila, para os ícones que estão na tela chegarem primeiro.
+ */
 object IconLoader {
-    private val mem = LruCache<String, Bitmap>(220)
-    private val exec = Executors.newFixedThreadPool(4)
+    private val mem = LruCache<String, Bitmap>(260)
+
+    /** fila "o último pedido sai primeiro" */
+    private val queue = object : LinkedBlockingDeque<Runnable>() {
+        override fun offer(e: Runnable): Boolean = offerFirst(e)
+    }
+    private val exec = ThreadPoolExecutor(4, 4, 30L, TimeUnit.SECONDS, queue)
     private val main = Handler(Looper.getMainLooper())
+
+    /** ícones baixando agora -> quadrinhos esperando por eles (só a thread principal mexe) */
+    private val waiting = HashMap<String, ArrayList<ImageView>>()
+
+    /** tarefa de cada ícone pedido, para passar para a frente da fila se ele for pedido de novo (só a thread principal mexe) */
+    private val queued = HashMap<String, Runnable>()
+
+    /** quando cada ícone falhou por último (sem internet, servidor fora): espera um pouco antes de tentar de novo */
+    private val failedAt = HashMap<String, Long>()
+    private const val RETRY_MS = 20_000L
 
     fun load(ctx: Context, champ: Champion, iv: ImageView) = loadUrl(ctx, champ.id, champ.avatar, champ.name, iv)
 
@@ -164,37 +187,60 @@ object IconLoader {
         }
         iv.setImageDrawable(InitialsDrawable(label))
         if (url.isBlank()) return
+        waiting[key]?.let {
+            if (iv !in it) it.add(iv) // já está baixando ou na fila: só espera junto (sem repetir o mesmo quadrinho)
+            // pedido de novo (o quadrinho voltou para a tela): se ainda está na fila, passa para a frente
+            queued[key]?.let { r -> if (queue.remove(r)) queue.offerFirst(r) }
+            return
+        }
         val dir = File(ctx.applicationContext.filesDir, "icons")
-        exec.execute {
+        val f = File(dir, "$key.png")
+        val failed = failedAt[key]
+        if (failed != null && SystemClock.uptimeMillis() - failed < RETRY_MS && !f.exists()) return
+        waiting[key] = arrayListOf(iv)
+        val task = Runnable {
+            var bmp: Bitmap? = null
             try {
-                val f = File(dir, "$key.png")
-                var bmp: Bitmap? = if (f.exists()) BitmapFactory.decodeFile(f.path) else null
-                if (bmp == null) {
-                    dir.mkdirs()
-                    val c = URL(url).openConnection() as HttpURLConnection
-                    try {
-                        c.connectTimeout = 8000
-                        c.readTimeout = 15000
-                        c.setRequestProperty("User-Agent", "Mozilla/5.0")
-                        if (c.responseCode == 200) {
-                            val bytes = c.inputStream.use { it.readBytes() }
-                            bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            if (bmp != null) {
-                                val tmp = File(dir, "$key.tmp")
-                                tmp.writeBytes(bytes)
-                                tmp.renameTo(f)
-                            }
-                        }
-                    } finally {
-                        c.disconnect()
+                bmp = if (f.exists()) BitmapFactory.decodeFile(f.path) else null
+                if (bmp == null) bmp = download(url, dir, key, f)
+            } catch (_: Throwable) {
+                // sem internet (ou sem memória para abrir a imagem): fica com as iniciais
+            } finally {
+                // sempre avisa a thread principal, senão o ícone ficaria "baixando" para sempre
+                val result = bmp
+                if (result != null) mem.put(key, result)
+                main.post {
+                    queued.remove(key)
+                    val views = waiting.remove(key) ?: return@post
+                    if (result == null) {
+                        failedAt[key] = SystemClock.uptimeMillis()
+                        return@post
                     }
+                    failedAt.remove(key)
+                    for (v in views) if (v.tag == key) v.setImageBitmap(result)
                 }
-                val result = bmp ?: return@execute
-                mem.put(key, result)
-                main.post { if (iv.tag == key) iv.setImageBitmap(result) }
-            } catch (_: Exception) {
-                // sem internet: fica com as iniciais
             }
+        }
+        queued[key] = task
+        exec.execute(task)
+    }
+
+    private fun download(url: String, dir: File, key: String, f: File): Bitmap? {
+        dir.mkdirs()
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 8000
+            c.readTimeout = 15000
+            c.setRequestProperty("User-Agent", "Mozilla/5.0")
+            if (c.responseCode != 200) return null
+            val bytes = c.inputStream.use { it.readBytes() }
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+            val tmp = File(dir, "$key.tmp")
+            tmp.writeBytes(bytes)
+            tmp.renameTo(f)
+            return bmp
+        } finally {
+            c.disconnect()
         }
     }
 }
