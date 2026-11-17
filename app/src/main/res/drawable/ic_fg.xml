@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- anel dourado -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#C8AA6E"
+        android:strokeWidth="4"
+        android:pathData="M54,54m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0" />
+    <!-- mira / losango central -->
+    <path
+        android:fillColor="#C8AA6E"
+        android:pathData="M54,38L66,54L54,70L42,54Z" />
+    <path
+        android:fillColor="#0A1428"
+        android:pathData="M54,46L60,54L54,62L48,54Z" />
+</vector>

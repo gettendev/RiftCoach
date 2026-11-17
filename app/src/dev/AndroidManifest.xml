@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Só existe na versão de teste do emulador: mostra um print do jogo em tela cheia. -->
+        <activity
+            android:name=".DevScreenActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.riftcoach.devscreen"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+    </application>
+</manifest>

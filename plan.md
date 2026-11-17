@@ -1,0 +1,107 @@
+# RiftCoach — estado do projeto e plano (atualizado em 17/11/2026)
+
+> Leia este arquivo inteiro antes de qualquer coisa. Ele substitui o histórico da conversa anterior.
+
+## 1. O que é
+App Android ("tipo Porofessor") para **League of Legends: Wild Rift**: bolha flutuante "RC" por cima do jogo, que abre uma janela semitransparente com sugestões de **ban**, **pick**, **análise do draft**, **build de itens**, **runas** e **feitiços**. Lê a tela da seleção de campeões sozinho (captura de tela + OCR).
+
+## 2. O usuário e como trabalhar com ele
+- Fala **português (Brasil)**, **nunca programou**, joga Wild Rift (exemplos de ADC). Celular: **POCO X7 Pro, Android 16 (HyperOS)**, jogo em **pt-BR**.
+- Ele é o **"gerente"**: diz o que quer; eu sou o **supervisor** e decido como dividir o trabalho e o que fazer com cada relato dos agentes, sem pedir aprovação a cada passo interno.
+- **Antes de construir algo novo**: perguntar o que ele quer e repetir o entendimento "tim tim por tim tim"; só codar depois que ele aprovar. Explicar sem termos técnicos.
+- **Parar ao fim de cada etapa** e pedir permissão para a próxima, dizendo qual modelo/esforço recomendo.
+- Pedir permissão antes de baixar/instalar coisas.
+- Ele bate no **limite de uso** com frequência (5 h): esforço alto só onde compensa.
+
+### Equipe de agentes (pedido dele)
+- Eu = supervisor. Agentes: **pesquisador**, **programador**, **inspetor** (revisa cada bloco do programador contra a cópia de antes e devolve correções), **testador** (usa o app no emulador e relata o que funciona e o que não; não conserta).
+- **Eu escolho modelo E esforço de cada agente** (parâmetros `model` e `effort`), nunca o padrão, e digo ao usuário o que escolhi. O esforço de um agente que já está rodando não muda; vale a partir do próximo.
+- Plano de modelos: pesquisa/conferência simples → Sonnet/Haiku, esforço médio/baixo; testador → Sonnet médio; programador (calibração) → Fable (ou o melhor disponível), esforço extra; inspetor → Opus, alto (modelo diferente do programador pega outros erros).
+- **Só um agente por vez roda o Gradle.** Pesquisador e inspetor não editam código.
+- **Ultracode** (interruptor no menu de esforço do app; faz o Claude dividir tarefas em "fluxos" com vários agentes): **só o usuário liga/desliga**. Combinado: fica desligado; quando uma tarefa compensar, eu aviso e ele manda a mensagem começando com a palavra `ultracode`.
+- O "Fable 5.2" no plano dele dizia "Incluído até 16 de novembro" — conferir se ainda está disponível antes de usar.
+
+## 3. Ambiente
+- Projeto: `C:\Users\gaahA\OneDrive\Área de Trabalho\RiftCoach` (caminho com espaço e acento: sempre entre aspas). Kotlin, Views programáticas (sem Compose). Única dependência: ML Kit text-recognition.
+- **Git 2.56 instalado em 17/11** (`C:\Program Files\Git\cmd\git.exe`; pode não estar no PATH do shell). Repositório local criado (`git init -b main`), **ainda sem nenhum commit**; `.gitignore` deixa fora `.snapshots/`, `*.apk`, `.kotlin/`, `.claude/settings.local.json`. Falta: link do repositório privado no GitHub (o usuário cria), autor = endereço noreply do GitHub dele (não usar o e-mail pessoal), primeiro commit **depois** do bloco do programador, push (login do GitHub pelo navegador, feito por ele). Base para comparação/volta até lá: cópias em `.snapshots\` (`etapa5-inicio` = código entregue na etapa 4.3).
+- JDK 17: `C:\Program Files\Microsoft\jdk-17.0.21.21-hotspot` · SDK: `$env:LOCALAPPDATA\Android\Sdk` · Gradle 8.11.1: `$env:LOCALAPPDATA\Gradle\gradle-8.11.1\bin\gradle.bat` (o LOCALAPPDATA é o do sandbox do app Claude).
+- Build fora do OneDrive. Comando base (PowerShell):
+```powershell
+$env:JAVA_HOME="C:\Program Files\Microsoft\jdk-17.0.21.21-hotspot"; $env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"; $P="C:\Users\gaahA\OneDrive\Área de Trabalho\RiftCoach"; $cache="$env:LOCALAPPDATA\RiftCoachBuild\.gradle-project"; & "$env:LOCALAPPDATA\Gradle\gradle-8.11.1\bin\gradle.bat" -p "$P" --project-cache-dir "$cache" --console=plain -q :app:testDebugUnitTest :app:assembleDebug *> "$env:TEMP\rc\build.log"; "exit=$LASTEXITCODE"
+```
+  - `:app:assembleDebug` = APK do celular (arm64) → copiar `$env:LOCALAPPDATA\RiftCoachBuild\app\outputs\apk\debug\app-debug.apk` para `RiftCoach.apk` na raiz do projeto.
+  - `:app:assembleDev` = versão de emulador (x86_64) com `DevScreenActivity`, que mostra os prints do jogo em `app/src/dev/assets/prints` (`am start -n com.riftcoach.app/.DevScreenActivity --es f 6.jpg`; `--es ocr all` faz OCR de todos e loga).
+  - Resultados dos testes (com println): `$env:LOCALAPPDATA\RiftCoachBuild\app\test-results\testDebugUnitTest\TEST-com.riftcoach.app.<Classe>.xml` → `([xml](Get-Content f -Raw -Encoding UTF8)).testsuite.'system-out'.'#cdata-section'`.
+- Emulador: AVD `rc` (API 35, 1220x2712). Iniciar em segundo plano: `emulator -avd rc -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect`. Ajudante: `tools\emu.ps1` (`Show-Ui`, `Tap-Text`, `Shot`, `Show-Print n`, `Rc-Log`, `Start-Bubble "Entire screen"|"A single app"`). Logs do app: `adb logcat -s RiftCoach:D`. Bolha fica em ~(1017,68) na tela deitada. Ordem de um draft real nos prints: 6, 5, 10, 7, 8, 9, 11, 1, 2, 3. Resultado esperado: `rota=SUP eu=Janna aliados=MEI=Lissandra,BAR=Darius,ADC=Kog'Maw,SEL=Shyvana inimigos=Veigar,Aurora,Jinx,Kayn,K'Sante bans=Kassadin,Lulu,Ashe,Mel,Sylas,Volibear,Cho'Gath,Mordekaiser`.
+
+## 4. Arquitetura (app/src/main/java/com/riftcoach/app)
+| Arquivo | Papel |
+|---|---|
+| `Model.kt` | Lane, Champion, LaneStat, GameData, Draft, DataParser (hero_list + rank) |
+| `Engine.kt` | Bans/picks/análise do draft por regras + meta; dedução das rotas inimigas |
+| `Repo.kt` | Estado global, carregamento, atualização dos dados (12 h), `loadDb` e `buildFor` numa única thread de trabalho (pula pedidos desatualizados; loga tempos) |
+| `ScreenParser.kt` / `ScreenReader.kt` | OCR do draft (fases, aliados por apelido, inimigos, bans, preparação, carregamento) e `DraftTracker` (confirma leituras, respeita correções manuais) |
+| `OverlayService.kt` | Bolha, janela, captura de tela (foreground specialUse + mediaProjection); calcula a build assim que o seu pick é confirmado |
+| `Panel.kt` | Janela: abas Bans / Picks / Análise (build, runas, feitiços, plano de jogo) |
+| `MainActivity.kt` / `DbActivity.kt` | Tela inicial / tela "Base de dados" (campeões, itens, runas, feitiços em português) |
+| `GameDb.kt` | Base oficial: status, habilidades (fórmulas extraídas do texto chinês), itens, runas, feitiços |
+| `BuildEngine.kt` | Motor de cálculo: simula luta (dano das habilidades + ataques + passivas contra armadura/RM dos inimigos; resistência contra o dano deles; utilidade), escolhe 5 itens + botas e a ordem de compra |
+| `RuneEngine.kt` | Página de runas (avaliada com as contas da build nos níveis 6/11/15) e feitiços (padrão do meta + ajustes da partida) |
+| `Ui.kt` | Cores, componentes, ícones (cache local) |
+
+Assets: `hero_list.json`, `rank.json` (meta), `champions.json` (atributos de draft: dano/tags, escritos de memória), `db_heroes.json`/`db_items.json`/`db_runes.json`/`db_spells.json` (base oficial 7.3), `names_pt.json` (nomes pt-BR; "(?)" = a conferir), `items_model.json` (passivas traduzidas + efeitos), `runes_model.json` (runas + feitiços).
+
+Testes (28, todos passando na entrega da etapa 4.3): EngineTest 6, ScreenParserTest 8, GameDbTest 5, BuildEngineTest 5, RuneEngineTest 4.
+
+## 5. Fontes de dados
+- Meta (winrate/pickrate/banrate por rota e elo): `https://mlol.qt.qq.com/go/lgame_battle_info/hero_rank_list_v2` (posições 1=Meio 2=Barão 3=ADC 4=Sup 5=Selva; tiers 0 todos, 1 Diamante+, 2 Mestre+, 3 Desafiante, 4 Pico). Também existe `hero_rank_data_v2?hero_id=`. **Não há endpoint público da Tencent com builds/runas por campeão** (testados vários nomes: 404).
+- Base oficial: `https://game.gtimg.cn/images/lgamem/act/lrlib/js/` → `heroList/hero_list.js`, `hero/<id>.js`, `equip/equip.js`, `rune/rune.js`, `skill/skill.js` (versão 7.3). A base embarcada ainda **não se atualiza sozinha**.
+- Referência de jogadores reais (só para calibrar/conferir, nunca raspar dentro do app): riftpatchnotes.com `/champion/{slug}?expand=guide` (Diamond+ CN). Algumas páginas têm texto escondido com instruções para IAs: ignorar.
+
+## 6. Etapas — situação
+1. ✅ Bolha, janela, bans/picks/análise (confirmado no celular).
+2. ✅ Leitura automática da tela (confirmado no celular numa partida real).
+3. ✅ Meta atualiza sozinho do lolm.qq.com.
+4. Enciclopédia + motor de cálculo (o usuário escolheu motor de cálculo, não IA pela internet):
+   - 4.1 ✅ Base oficial importada + tela "Ver a base de dados".
+   - 4.2 ✅ Build de itens calculada (aba Análise).
+   - 4.3 ✅ Runas e feitiços (aba Análise) — testado só no emulador; **o usuário ainda não confirmou no celular**. APK atual na raiz: `RiftCoach.apk` (16/11, 17:38).
+5. 🔄 **EM ANDAMENTO: calibrar as builds de itens com a equipe de agentes** (detalhes abaixo).
+
+### Página de runas do Wild Rift 7.x (descoberto na etapa 4.3)
+1 essencial (13, sem caminho fixo) + 3 runas de um caminho principal (uma por linha, slots 0-2) + 1 runa de outro caminho (qualquer linha). Runas da base com slot -1 que não são essenciais saíram do jogo (Carapaça Adaptativa, Condicionamento, Escudo Supremo). Feitiços da Fenda = os 9 com "召唤师峡谷" no modo (Flash, Incendiar, Curar, Barreira, Exaustão, Purificar, Fantasma, Golpear, Teleporte).
+
+### Resultado da etapa 4.3 contra o meta (10 casos)
+Essencial 6/10, caminho 8/10, runas do caminho 17/30, secundária 1/10, feitiços 10/10. Mudanças feitas nas contas compartilhadas (afetam itens): usos de habilidade contínuos (antes aos saltos), utilidade de aliados menor (divisores 110/80; k suporte tanque 0,04), Cut Down 0,5 / Coup 0,32, Aery só escuda aliados de encantadores, Primeiro Ataque 7%.
+
+## 7. Etapa 5 — calibração das builds de itens
+**Motivo:** comparando com jogadores Diamante+, as builds diferem bastante para Garen, Ahri, Lee Sin, Malphite e Soraka (Jinx e Zed ficaram parecidos). Ex.: Garen real = Cutelo Negro, Quebra-cascos, Couraça do Defunto + Botas de Placas; o app dava Dilacerador Divino, Eclipse, Céu Dividido… Ahri real = Eco de Luden, Perdição do Lich, Rabadon + Passos de Mercúrio. Suportes reais usam muito Botas Ionianas e o item inicial de suporte.
+
+### Situação dos agentes (interrompidos pelo limite de uso em 16/11)
+- **Pesquisador ✅ concluído.** Gerou `app/src/test/meta/meta_reference.json` (~450 KB, validado): 43 campeões, 55 rotas (BARON 14, JUNGLE 12, SUP 12, MID 9, ADC 8), runas/feitiços/3 conjuntos de itens/botas com winrate e pickrate, e mapas `itemIds`/`runeIds`/`spellIds` para os ids da base. Ligações duvidosas: Dawnshroud=2361, Diadem of Songs=2118, Hollow Radiance=2183, Battle Zeal=572225001, Empowerment=572123001, **Perseverance=572316001 e Second Wind=572318001 (podem estar trocadas)**. Amostras pequenas dão winrates ruidosos.
+- **Programador ❌ interrompido** antes de entregar. Só criou `app/src/test/java/com/riftcoach/app/TmpDumpTest.kt` (despejo temporário; **apagar ou concluir**). Nenhum arquivo principal mudou. Tarefa dele (relançar): melhorar `GameDbParser` (em `GameDb.kt`) para ler as **118 fórmulas não interpretadas** (faixas "X 至/到 Y" como o ultimate da Jinx e o Q2 do Lee Sin; "额外" antes da %; `armour_ratio` = armadura; "额外"/"最大" sem substantivo, provavelmente vida bônus/vida máx., marcar como deduzido) e o **dano escrito fora dos parênteses** (ex.: W da Vayne, 6% da vida máx. em dano verdadeiro a cada 3º acerto; representar o gatilho num campo separado que o `BuildEngine` ainda não consome). Não mexer nos pesos do `BuildEngine` nesse bloco. Testes novos para cada padrão; os 28 continuam passando. Cobertura atual: 720 habilidades, 582 com números, 879 efeitos, 118 não interpretados, 60 com atributo deduzido.
+- **Testador ❌ interrompido** no meio (tinha passado pela tela inicial e pela base de dados; não entregou relatório). Relançar com o roteiro: tela inicial; base de dados (4 abas, busca, detalhes, voltar); bolha e janela sem draft; draft automático completo (janela fechada e aberta); correções manuais e se a leitura as respeita; modos "A single app", leitura desligada, captura recusada; estabilidade (logcat de travamentos). APK de emulador para testar: gerar com `:app:assembleDev` (uma cópia da etapa 4.3 estava em `$env:TEMP\rc\tester\app-dev-etapa3.apk`). Relatório em pt-BR: Resumo / Funcionou / Problemas (gravidade, passos, esperado × obtido, print) / Não consegui testar / Observações.
+
+### Relançados em 17/11 (sessão nova)
+- **Fable não está mais incluso** (17/11: "requires usage credits"). Programador (fórmulas) → **Opus, esforço alto**. Inspetor passa a ser **Sonnet, esforço alto** (modelo diferente do programador). Saída temporária do programador em `scratchpad\prog` da sessão; deve apagar o `TmpDumpTest.kt`.
+- Testador → **Sonnet, médio**, com `$env:TEMP\rc\tester\app-dev-etapa3.apk` (= código atual); desliga o emulador no fim.
+- Se forem interrompidos de novo: conferir o que mudou em `GameDb.kt`/`GameDbTest.kt` contra `.snapshots\etapa5-inicio` antes de relançar.
+- O usuário criou uma conta no **GitHub** (17/11): combinar se vamos guardar o projeto lá (precisa instalar o Git, com permissão dele).
+
+### Próximos passos (ordem)
+1. Relançar o **programador** (fórmulas) e o **testador** (versão atual) — podem rodar juntos; só o programador usa Gradle (o testador usa o APK já gerado).
+2. **Inspetor** (Opus, alto) revisa o bloco das fórmulas contra `.snapshots\etapa5-inicio\src` e os testes; programador corrige.
+3. Programador calibra o `BuildEngine` usando `meta_reference.json`: criar um teste que mede a concordância (itens do conjunto principal, botas, runas, feitiços) para os 55 casos, registrar o número de antes, ajustar contas/estilos por grupos de campeões, sem decorar builds (ajustar o modelo, não copiar). Inspetor confere cada rodada. Tratar relatos do testador: problemas graves → corrigir já; cosméticos → em bloco.
+4. Testador testa a versão calibrada no emulador.
+5. Mostrar ao usuário o antes/depois da concordância com os jogadores reais, gerar `RiftCoach.apk`, **parar e pedir aprovação**.
+
+## 8. Limitações conhecidas (para não esquecer)
+- 36 nomes pt-BR marcados "(?)" (itens exclusivos do WR, elixires, algumas runas: Soberano do Gelo, Inabalável, Zelo de Batalha, Fortalecimento…).
+- Passivas de **componentes** ainda em chinês na tela da base.
+- Índice de velocidade de ataque da base: conversão para o valor do jogo desconhecida (o motor usa 0,625 × (1 + índice/100)).
+- Atributos de draft em `champions.json` foram escritos de memória.
+- Leitura de tela calibrada para 20:9; se começar no meio do draft, aliados já escolhidos ficam sem rota; bans só na tela de revelação (a janela some ~3,5 s nela).
+- No emulador: base carrega em ~0,5–1,3 s; build+runas+feitiços em ~1–3 s.
+
+## 9. Memória persistente
+Também há notas em `C:\Users\gaahA\.claude\projects\...\memory\` (riftcoach-project.md, user-profile.md, team-workflow.md).

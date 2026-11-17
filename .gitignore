@@ -1,0 +1,16 @@
+# Configurações locais do Claude e arquivos temporários do Kotlin
+.claude/settings.local.json
+.kotlin/
+
+# Cópias de segurança antigas (o Git guarda o histórico no lugar delas)
+.snapshots/
+
+# APKs gerados (são refeitos a cada build; ficam grandes no histórico)
+*.apk
+
+# Gradle / Android Studio (caso apareçam)
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
