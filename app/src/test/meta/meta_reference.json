@@ -55,8 +55,7 @@
                                    },
                     "Dawnshroud":  {
                                        "id":  "2361",
-                                       "unsure":  true,
-                                       "why":  "Not found by name. 2361 (Chinese: blazing sun robe, pt \u0027Manto do Sol Ardente (?)\u0027) has a \u0027Dawn\u0027 passive on a robe-type item, matching \u0027Dawn\u0027+\u0027shroud\u0027. Alternative candidate: 2363 (noon cloak, Lifeline-type)."
+                                       "why":  "Confirmed in E5-03: riftpatchnotes Dawnbringer passive (400 range, 40 + 2.5% bonus HP, 20% armor/MR, 3s) and 250 HP/50 armor/30 MR match official 2361."
                                    },
                     "Dead Man\u0027s Plate":  {
                                                   "id":  "2346"
@@ -65,9 +64,8 @@
                                                "id":  "2257"
                                            },
                     "Diadem of Songs":  {
-                                            "id":  "2118",
-                                            "unsure":  true,
-                                            "why":  "2118 (Chinese: whispering circlet, base item, pt \u0027Diadema Sussurrante (?)\u0027) is the base tear support item that evolves into 2119 (Crown of Songs, hidden). Page lists \u0027Diadem of Songs\u0027 as a core item, so the base 2118 was chosen over 2119. Pt name flagged (?)."
+                                            "id":  "2119",
+                                            "why":  "Corrected in E5-03: riftpatchnotes lists Diadem of Songs with 1200 mana and the Diadem heal passive (0.8% max mana, 800 range) = official 2119 (full form); recipe Whispering Circlet = 2118."
                                         },
                     "Divine Sunderer":  {
                                             "id":  "2272"
@@ -122,8 +120,7 @@
                                            },
                     "Hollow Radiance":  {
                                             "id":  "2183",
-                                            "unsure":  true,
-                                            "why":  "pt name \u0027Radiancia Vazia (?)\u0027 flagged unsure; passive (Immolate magic damage aura + Desolation) is consistent with Hollow Radiance but the match is by description only."
+                                            "why":  "Confirmed in E5-03: riftpatchnotes Immolate 20-30 + 1% bonus HP, Desolate 30 + 2%, 400 HP/40 MR/15 haste match official 2183."
                                         },
                     "Horizon Focus":  {
                                           "id":  "2172"
@@ -303,8 +300,7 @@
                                        },
                     "Battle Zeal":  {
                                         "id":  "572225001",
-                                        "unsure":  true,
-                                        "why":  "Icon Precision_572225001 (no name), pt \u0027Zelo de Batalha (?)\u0027; description (stacking ability damage vs champions in combat) fits Battle Zeal; Precision slot 1."
+                                        "why":  "Confirmed in E5-03: riftpatchnotes Precision slot 1, patch 7.2 amp 1.4% matches official 572225001 (1.4% per second, max 3 stacks)."
                                     },
                     "Bone Plating":  {
                                          "id":  "572312001"
@@ -350,8 +346,7 @@
                                          },
                     "Empowerment":  {
                                         "id":  "572123001",
-                                        "unsure":  true,
-                                        "why":  "Not in the English icon names. 572123001 (Keystone_PresstheAttack, pt \u0027Fortalecimento (?)\u0027, 3 hits on same champion -\u003e adaptive damage + amp) is the only Precision keystone left unmatched; it is probably Wild Rift\u0027s name for Press the Attack. Used as keystone by Lucian and Ezreal alt page."
+                                        "why":  "Confirmed in E5-03: riftpatchnotes keystone, 3 hits same champion, patch 7.2 40-165 adaptive + 8% amp matches official 572123001."
                                     },
                     "Eyeball Collection":  {
                                                "id":  "572516001"
@@ -409,8 +404,7 @@
                                    },
                     "Perseverance":  {
                                          "id":  "572316001",
-                                         "unsure":  true,
-                                         "why":  "Icon Defense_tenacity, pt \u0027Perseveranca (?)\u0027 (10% tenacity + armor/MR when CCed). Matched by elimination and slot position (Resolve slot 3 in the pages). See Second Wind note: riftpatchnotes patch text describes Perseverance as a missing-health regen, which conflicts."
+                                         "why":  "Confirmed in E5-03: riftpatchnotes Resolve slot 3, 10% tenacity + 10-15 armor/MR when CCed (1.5s) matches official 572316001; not swapped with Second Wind."
                                      },
                     "Phase Rush":  {
                                        "id":  "572115001"
@@ -426,8 +420,7 @@
                                },
                     "Second Wind":  {
                                         "id":  "572318001",
-                                        "unsure":  true,
-                                        "why":  "Icon Defense_Regeneration, pt \u0027Ventos Revigorantes\u0027 (5 hp/5s + % missing health after champion damage). Matched by slot position in the pages (primary slot 2) and name. NOTE riftpatchnotes patch text describes Perseverance as the missing-health regen, which matches this description, so Second Wind/Perseverance could be swapped."
+                                        "why":  "Confirmed in E5-03: riftpatchnotes Resolve slot 2, patch 7.2 heal 3 + 1.5% missing HP matches official 572318001; not swapped with Perseverance."
                                     },
                     "Sudden Impact":  {
                                           "id":  "572217001"
